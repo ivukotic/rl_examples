@@ -1,4 +1,4 @@
- The IP address the notebook server will listen on.
+# The IP address the notebook server will listen on.
 c.NotebookApp.ip = '*'
 c.NotebookApp.notebook_dir = '/rl_examples'
 c.NotebookApp.open_browser = False
