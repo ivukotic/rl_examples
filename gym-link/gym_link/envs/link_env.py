@@ -31,7 +31,7 @@ class LinkEnv(gym.Env):
         self.dt = 1  # seconds
         #  key: int, start: int, size: int [bytes], transfered: int[bytes]
         self.transfers = {}
-        self.current_base_rate = 0
+        self.current_base_rate = self.max_link_rate * 0.5 * np.random.ranf()
         self.step = 0
         self.ntransfers = 0
         self.state = None
@@ -54,11 +54,11 @@ class LinkEnv(gym.Env):
 
         # add transfers if asked for
         for i in action:
-            file_size = int(math.fabs(np.random.normal(self.file_size_mean, self.file_size_sigma)))
+            file_size = int(math.fabs(self.file_size_mean + np.random.standard_normal() * self.file_size_sigma))
             self.transfers[self.ntransfers] = [self.step, file_size, 0]
 
         # find current base rate
-            self.current_base_rate += int(np.random.normal(0, 8 * 1024 * 1024))
+            self.current_base_rate += int(np.random.standard_normal(0, 8 * 1024 * 1024))
             if self.current_base_rate > self.base_rate_max:
                 self.current_base_rate = self.base_rate_max
             if self.current_base_rate < self.base_rate_min:
