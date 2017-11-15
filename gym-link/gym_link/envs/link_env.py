@@ -29,24 +29,24 @@ class LinkEnv(gym.Env):
         self.base_rate_max = self.max_link_rate * 0.9
         self.handshake_duration = 7  # seconds
         self.max_rate_per_file = 25 * 1024 * 1024  # B/s
-        self.file_size_mean = 150 * 1024 * 1024
-        self.file_size_sigma = 200 * 1024 * 1024
+        self.file_size_mean = 350 * 1024 * 1024
+        self.file_size_sigma = 300 * 1024 * 1024
 
-        self.dt = 1  # seconds
-        #  key: int, start: int, size: int [bytes], transfered: int[bytes]
-        self.transfers = {}
+        #  key: int, start: int, stop:int,  size: int [bytes], transfered: int[bytes]
+        self.transfers = deque(maxlen=2000)
         self.current_base_rate = int(self.max_link_rate * 0.5 * np.random.ranf())
         self.tstep = 0
-        self.ntransfers = 0
         self.viewer = None
         self.h_base = deque(maxlen=600)
         self.h_added = deque(maxlen=600)
+        self.dc_free = 0
+        self.dc_used = 0
         self._seed()
 
         # obesrvation space reports only on files transfered: rate and how many steps ago it started.
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0]),
-            high=np.array([np.finfo(np.float32).max, np.iinfo(np.int32).max])
+            low=np.array([0.0, 0, 0]),
+            high=np.array([np.finfo(np.float32).max, np.iinfo(np.int32).max, np.iinfo(np.int32).max])
         )
         self.action_space = spaces.Discrete(4)
 
@@ -59,8 +59,7 @@ class LinkEnv(gym.Env):
         # add transfers if asked for
         for i in range(action):
             file_size = int(math.fabs(self.file_size_mean + np.random.standard_normal() * self.file_size_sigma))
-            self.transfers[self.ntransfers] = [self.tstep, file_size, 0]
-            self.ntransfers += 1
+            self.transfers.append([self.tstep, 0, file_size, 0])
 
         # find current base rate
         self.current_base_rate += int(np.random.standard_normal() * 8 * 1024 * 1024)
@@ -71,9 +70,9 @@ class LinkEnv(gym.Env):
 
         # find used rate if all the ongoing transfers would be at maximal rate
         active_transfers = 0
-        for t in self.transfers.values():
+        for t in self.transfers:
             # print(t)
-            if self.tstep < self.handshake_duration + t[0]:
+            if self.tstep < self.handshake_duration + t[0] or t[1] > 0:
                 continue
             active_transfers += 1
 
@@ -82,9 +81,12 @@ class LinkEnv(gym.Env):
         # find free bandwidth
         max_free_bandwidth = self.max_link_rate - self.current_base_rate
 
+        self.dc_free += max_free_bandwidth / 1024
+        self.dc_used += min(max_free_bandwidth, max_rate) / 1024
+
         reward = max_rate / max_free_bandwidth * 100
         if reward > 100:
-            reward = -reward + 100
+            reward = -reward * 3 + 100
 
         episode_over = False
         if (max_rate + self.current_base_rate) > 1.1 * self.max_link_rate:
@@ -94,20 +96,29 @@ class LinkEnv(gym.Env):
         if active_transfers > 0:
             current_rate_per_file = min(math.floor(max_free_bandwidth / active_transfers), self.max_rate_per_file)
 
-        time_of_last_started_finished_transfer = 0
-        rate_of_last_started_finished_transfer = 0
+        # LSFT - last started finished transfer
+        time_of_LSFT = 0
+        rate_of_LSFT = 0
+        size_of_LSFT = 0
         finished = 0
-        for k, t in self.transfers.items():
-            if self.tstep < self.handshake_duration + t[0]:
+        # transfer [start_time, end_time, size, transfered_till_now]
+        for t in self.transfers:
+            if self.tstep < self.handshake_duration + t[0]:  # still in handshake phase
                 continue
-            t[2] += current_rate_per_file
-            if t[2] > t[1]:  # it is finished
-                finished += 1
-                if t[0] > time_of_last_started_finished_transfer:  # last started from all finished
-                    rate_of_last_started_finished_transfer = t[1] / (self.tstep - t[0])
-                    time_of_last_started_finished_transfer = t[0]
+            if t[1] == 0:  # increase transfered size for unfinished transfers
+                t[3] += current_rate_per_file
 
-        observation = (rate_of_last_started_finished_transfer, time_of_last_started_finished_transfer)
+            if t[3] >= t[2] and t[1] == 0:  # if some finished in this timestep
+                t[1] = self.tstep
+
+            if t[3] >= t[2]:  # all finished
+                finished += 1  # this is just for info
+                if t[0] > time_of_LSFT:  # last started from all finished
+                    rate_of_LSFT = t[2] / (t[1] - t[0])
+                    size_of_LSFT = t[2]
+                    time_of_LSFT = t[0]
+
+        observation = (rate_of_LSFT, size_of_LSFT, time_of_LSFT)
         self.tstep += 1
 
         self.h_base.append(self.current_base_rate)
@@ -115,15 +126,17 @@ class LinkEnv(gym.Env):
 
         return observation, reward, episode_over, {
             "finished transfers": finished,
+            "duty cycle": self.dc_used / self.dc_free,
             "active transfers": active_transfers,
             "base rate [%]": int(self.current_base_rate / self.max_link_rate * 10000) / 100
         }
 
     def _reset(self):
         self.tstep = 0
-        self.transfers = {}
-        self.ntransfers = 0
-        return np.array((0, 0))
+        self.transfers.clear()
+        self.dc_free = 0
+        self.dc_used = 0
+        return np.array((0, 0, 0))
 
     def _render(self, mode='human', close=False):
         if close:
