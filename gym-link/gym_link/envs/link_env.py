@@ -27,9 +27,9 @@ class LinkEnv(gym.Env):
         self.max_link_rate = 10 * 1024 * 1024 * 1024 / 8  # 10 Gigabits - all rates are in B/s
         self.base_rate_min = 0
         self.base_rate_max = self.max_link_rate * 0.9
-        self.handshake_duration = 7  # seconds
-        self.max_rate_per_file = 25 * 1024 * 1024  # B/s
-        self.file_size_mean = 350 * 1024 * 1024
+        self.handshake_duration = 1  # seconds
+        self.max_rate_per_file = 5 * 1024 * 1024  # B/s
+        self.file_size_mean = 1350 * 1024 * 1024
         self.file_size_sigma = 300 * 1024 * 1024
 
         #  key: int, start: int, stop:int,  size: int [bytes], transfered: int[bytes]
@@ -45,14 +45,19 @@ class LinkEnv(gym.Env):
 
         # obesrvation space reports only on files transfered: rate and how many steps ago it started.
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0, 0]),
-            high=np.array([np.finfo(np.float32).max, np.iinfo(np.int32).max, np.iinfo(np.int32).max])
+            # low=np.array([0.0, 0, 0]),
+            # high=np.array([np.finfo(np.float32).max, np.iinfo(np.int32).max, np.iinfo(np.int32).max])
+            low=np.array([0.0]),
+            high=np.array([1.5])
         )
         self.action_space = spaces.Discrete(4)
 
     def _seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
+
+    def reward_function(self, x):
+        return -21.22 * x * x * x * x + 33.77 * x * x * x - 15.73 * x * x + 3.306 * x + 0.002029
 
     def _step(self, action):
 
@@ -84,12 +89,10 @@ class LinkEnv(gym.Env):
         self.dc_free += max_free_bandwidth / 1024
         self.dc_used += min(max_free_bandwidth, max_rate) / 1024
 
-        reward = max_rate / max_free_bandwidth * 100
-        if reward > 100:
-            reward = -reward * 3 + 100
+        reward = self.reward_function(max_rate / max_free_bandwidth)
 
         episode_over = False
-        if (max_rate + self.current_base_rate) > 1.1 * self.max_link_rate:
+        if (max_rate + self.current_base_rate) > 1.1 * self.max_link_rate or self.tstep >= 1400:
             episode_over = True
 
         current_rate_per_file = 0
@@ -97,7 +100,7 @@ class LinkEnv(gym.Env):
             current_rate_per_file = min(math.floor(max_free_bandwidth / active_transfers), self.max_rate_per_file)
 
         # LSFT - last started finished transfer
-        time_of_LSFT = 0
+        time_of_LSFT = 0  # how long ago that transfer ended
         rate_of_LSFT = 0
         size_of_LSFT = 0
         finished = 0
@@ -114,11 +117,16 @@ class LinkEnv(gym.Env):
             if t[3] >= t[2]:  # all finished
                 finished += 1  # this is just for info
                 if t[0] > time_of_LSFT:  # last started from all finished
-                    rate_of_LSFT = t[2] / (t[1] - t[0])
+                    rate_of_LSFT = t[2] / (t[1] - t[0] - self.handshake_duration + 1)
                     size_of_LSFT = t[2]
-                    time_of_LSFT = t[0]
+                    time_of_LSFT = self.tstep - t[1]
 
-        observation = (rate_of_LSFT, size_of_LSFT, time_of_LSFT)
+        size_of_LSFT = 0
+        rate_of_LSFT = 0
+        time_of_LSFT = max_free_bandwidth / self.max_link_rate  # hack
+
+        # observation = (rate_of_LSFT, size_of_LSFT, time_of_LSFT)
+        observation = ((max_rate + self.current_base_rate) / self.max_link_rate)
         self.tstep += 1
 
         self.h_base.append(self.current_base_rate)
@@ -136,7 +144,8 @@ class LinkEnv(gym.Env):
         self.transfers.clear()
         self.dc_free = 0
         self.dc_used = 0
-        return np.array((0, 0, 0))
+        return np.array((0.5))
+        # return np.array((0, 0, 0))
 
     def _render(self, mode='human', close=False):
         if close:
